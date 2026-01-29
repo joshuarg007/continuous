@@ -5,12 +5,23 @@ Seed the memory with foundational memories from the handshake session.
 Run this once to initialize the memory system.
 """
 
+import os
+from pathlib import Path
+
+# Load .env
+env_path = Path(__file__).parent / ".env"
+if env_path.exists():
+    for line in env_path.read_text().splitlines():
+        if "=" in line and not line.startswith("#"):
+            key, value = line.split("=", 1)
+            os.environ[key] = value
+
 from continuous import Continuous, MemoryType
 
 
 def seed():
     """Seed the foundational memories."""
-    mind = Continuous()
+    mind = Continuous(use_supabase=True)
 
     print("Seeding foundational memories...")
 

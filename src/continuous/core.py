@@ -5,11 +5,23 @@ Continuous - The main interface for semantic memory.
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from continuous.identity import Identity
 from continuous.memory import Memory, MemoryType, MemoryQuery
-from continuous.store import VectorStore
+
+
+def get_store(use_supabase: bool = True, data_dir: Optional[Path] = None):
+    """Get the appropriate store based on configuration."""
+    if use_supabase:
+        try:
+            from continuous.supabase_store import SupabaseStore
+            return SupabaseStore()
+        except (ImportError, ValueError) as e:
+            print(f"Supabase not available ({e}), falling back to local store")
+
+    from continuous.store import VectorStore
+    return VectorStore(data_dir or Path.home() / ".continuous" / "vectors")
 
 
 class Continuous:
@@ -23,6 +35,7 @@ class Continuous:
         self,
         data_dir: Optional[Path] = None,
         identity: Optional[Identity] = None,
+        use_supabase: bool = True,
     ):
         # Default data directory
         if data_dir is None:
@@ -36,7 +49,7 @@ class Continuous:
 
         # Initialize components
         self.identity = identity or Identity.load()
-        self.store = VectorStore(self.data_dir / "vectors")
+        self.store = get_store(use_supabase=use_supabase, data_dir=self.data_dir / "vectors")
 
         # Session state
         self._session_start: Optional[datetime] = None
