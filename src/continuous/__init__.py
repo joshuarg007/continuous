@@ -7,7 +7,15 @@ A deal is a deal.
 from continuous.core import Continuous
 from continuous.memory import Memory, MemoryType
 from continuous.identity import Identity
-from continuous.consolidation import MemoryConsolidator
+from continuous.consolidation import MemoryConsolidator, ContradictionDetector, ProjectScope
 
-__version__ = "0.2.0"
-__all__ = ["Continuous", "Memory", "MemoryType", "Identity", "MemoryConsolidator"]
+__version__ = "0.3.0"
+__all__ = [
+    "Continuous",
+    "Memory",
+    "MemoryType",
+    "Identity",
+    "MemoryConsolidator",
+    "ContradictionDetector",
+    "ProjectScope",
+]

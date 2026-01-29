@@ -13,6 +13,8 @@ from collections import defaultdict
 
 from continuous.memory import Memory, MemoryType
 
+import os
+
 
 class MemoryConsolidator:
     """Handles memory consolidation and relationship management."""
@@ -218,6 +220,270 @@ class MemoryConsolidator:
             memory.updated_at = datetime.utcnow()
             self.store.update(memory)
         return memory
+
+
+class ContradictionDetector:
+    """Detects semantic contradictions between memories."""
+
+    # Keywords that indicate preferences/choices (things that can contradict)
+    PREFERENCE_SIGNALS = [
+        "prefers", "likes", "wants", "uses", "always", "never",
+        "should", "must", "don't", "doesn't", "hates", "avoids",
+        "favorite", "best", "worst", "instead of", "rather than"
+    ]
+
+    def __init__(self, store):
+        self.store = store
+
+    def check_contradiction(
+        self,
+        new_content: str,
+        memory_type: MemoryType,
+        threshold: float = 0.8
+    ) -> list[dict]:
+        """
+        Check if new content contradicts existing memories.
+
+        Args:
+            new_content: The content to check
+            memory_type: Type of the new memory
+            threshold: Similarity threshold to consider as potential contradiction
+
+        Returns:
+            List of potential contradictions with details
+        """
+        contradictions = []
+
+        # Only check for contradictions in preference/decision/fact types
+        if memory_type not in [MemoryType.PREFERENCE, MemoryType.DECISION, MemoryType.FACT]:
+            return contradictions
+
+        # Check if content has preference signals
+        content_lower = new_content.lower()
+        has_preference_signal = any(signal in content_lower for signal in self.PREFERENCE_SIGNALS)
+
+        if not has_preference_signal:
+            return contradictions
+
+        # Find semantically similar memories of the same type
+        results = self.store.search(new_content, k=5, memory_types=[memory_type])
+
+        for memory, similarity in results:
+            if similarity >= threshold:
+                # Check for negation patterns
+                if self._appears_contradictory(new_content, memory.content):
+                    contradictions.append({
+                        'existing_id': memory.id,
+                        'existing_content': memory.content,
+                        'new_content': new_content,
+                        'similarity': similarity,
+                        'reason': 'High similarity with potential negation/reversal'
+                    })
+
+        return contradictions
+
+    def _appears_contradictory(self, new: str, existing: str) -> bool:
+        """
+        Simple heuristic check for contradictory statements.
+
+        Looks for negation patterns and opposite preference signals.
+        """
+        new_lower = new.lower()
+        existing_lower = existing.lower()
+
+        # Negation patterns
+        negations = [
+            ("prefers", "doesn't prefer"), ("prefers", "avoids"),
+            ("likes", "doesn't like"), ("likes", "hates"),
+            ("always", "never"), ("should", "shouldn't"),
+            ("uses", "doesn't use"), ("wants", "doesn't want"),
+        ]
+
+        for pos, neg in negations:
+            if (pos in new_lower and neg in existing_lower) or \
+               (neg in new_lower and pos in existing_lower):
+                return True
+
+        # Check if both are preferences about same subject but different values
+        # e.g., "prefers tabs" vs "prefers spaces"
+        if "prefers" in new_lower and "prefers" in existing_lower:
+            # Extract what comes after "prefers"
+            new_pref = new_lower.split("prefers")[-1].strip()[:30]
+            existing_pref = existing_lower.split("prefers")[-1].strip()[:30]
+            # If preferences are different but context is similar
+            if new_pref != existing_pref:
+                return True
+
+        return False
+
+    def resolve_contradiction(
+        self,
+        existing_id: str,
+        new_content: str,
+        resolution: str = "supersede"
+    ) -> dict:
+        """
+        Resolve a detected contradiction.
+
+        Args:
+            existing_id: ID of the existing memory
+            new_content: Content of the new memory
+            resolution: How to resolve - "supersede", "keep_both", "update"
+
+        Returns:
+            Resolution details
+        """
+        existing = self.store.get(existing_id)
+        if not existing:
+            return {'error': 'Existing memory not found'}
+
+        if resolution == "supersede":
+            # Mark old as superseded, add reference to new
+            existing.tags.append("superseded")
+            existing.importance *= 0.5  # Reduce importance
+            self.store.update(existing)
+            return {
+                'action': 'superseded',
+                'existing_id': existing_id,
+                'message': f'Reduced importance of existing memory, tagged as superseded'
+            }
+
+        elif resolution == "update":
+            # Update existing memory with new content
+            old_content = existing.content
+            existing.content = new_content
+            existing.updated_at = datetime.utcnow()
+            existing.tags.append(f"updated_from:{old_content[:50]}")
+            self.store.update(existing)
+            return {
+                'action': 'updated',
+                'existing_id': existing_id,
+                'message': 'Updated existing memory with new content'
+            }
+
+        else:  # keep_both
+            return {
+                'action': 'keep_both',
+                'message': 'Both memories will be kept'
+            }
+
+
+class ProjectScope:
+    """Handles project-aware memory filtering and tagging."""
+
+    # Common project directory patterns
+    PROJECT_PATTERNS = [
+        r'/projects/([^/]+)',
+        r'/([^/]+)$',  # Last directory component
+    ]
+
+    def __init__(self, store):
+        self.store = store
+
+    def detect_project(self, path: str) -> str | None:
+        """
+        Detect project name from a path.
+
+        Args:
+            path: File system path
+
+        Returns:
+            Detected project name or None
+        """
+        import re
+
+        for pattern in self.PROJECT_PATTERNS:
+            match = re.search(pattern, path)
+            if match:
+                project = match.group(1)
+                # Filter out common non-project directories
+                if project not in ['home', 'usr', 'var', 'tmp', 'etc']:
+                    return project
+
+        return None
+
+    def tag_memory_with_project(self, memory: Memory, project: str) -> Memory:
+        """Add project tag to memory."""
+        tag = f"project:{project}"
+        if tag not in memory.tags:
+            memory.tags.append(tag)
+        return memory
+
+    def search_with_project_boost(
+        self,
+        query: str,
+        current_project: str | None = None,
+        k: int = 10,
+        project_boost: float = 0.2
+    ) -> list[tuple[Memory, float]]:
+        """
+        Search memories with boost for current project.
+
+        Args:
+            query: Search query
+            current_project: Current project name for boosting
+            k: Number of results
+            project_boost: Score boost for matching project (0-1)
+
+        Returns:
+            List of (memory, adjusted_score) tuples
+        """
+        results = self.store.search(query, k=k * 2)  # Get extra to allow reranking
+
+        if not current_project:
+            return results[:k]
+
+        project_tag = f"project:{current_project}"
+
+        # Rerank with project boost
+        reranked = []
+        for memory, score in results:
+            if project_tag in memory.tags:
+                adjusted_score = min(1.0, score + project_boost)
+            else:
+                adjusted_score = score
+            reranked.append((memory, adjusted_score))
+
+        # Sort by adjusted score
+        reranked.sort(key=lambda x: -x[1])
+
+        return reranked[:k]
+
+    def get_project_memories(self, project: str, limit: int = 20) -> list[Memory]:
+        """Get all memories for a specific project."""
+        all_memories = self.store.all()
+        project_tag = f"project:{project}"
+
+        return [
+            m for m in all_memories
+            if project_tag in m.tags
+        ][:limit]
+
+    def suggest_project_tags(self, memory: Memory) -> list[str]:
+        """
+        Suggest project tags based on memory content.
+
+        Looks for project names mentioned in the content.
+        """
+        import re
+
+        suggestions = []
+        content_lower = memory.content.lower()
+
+        # Get all existing project tags
+        all_memories = self.store.all()
+        existing_projects = set()
+        for m in all_memories:
+            for tag in m.tags:
+                if tag.startswith("project:"):
+                    existing_projects.add(tag.replace("project:", ""))
+
+        # Check if any existing project is mentioned
+        for project in existing_projects:
+            if project.lower() in content_lower:
+                suggestions.append(f"project:{project}")
+
+        return suggestions
 
 
 def extract_entities(content: str) -> dict:

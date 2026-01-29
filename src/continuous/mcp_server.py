@@ -19,7 +19,7 @@ from mcp.types import (
 
 from continuous.core import Continuous
 from continuous.memory import MemoryType
-from continuous.consolidation import MemoryConsolidator
+from continuous.consolidation import MemoryConsolidator, ContradictionDetector, ProjectScope
 
 # Initialize the server
 server = Server("continuous")
@@ -191,6 +191,67 @@ async def list_tools() -> list[Tool]:
                 "required": ["memory_id"]
             }
         ),
+        Tool(
+            name="check_contradiction",
+            description="Check if new content contradicts existing memories before storing. Use for preferences, decisions, and facts that might conflict with existing knowledge.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "The content to check for contradictions"
+                    },
+                    "memory_type": {
+                        "type": "string",
+                        "enum": ["preference", "decision", "fact"],
+                        "description": "Type of memory to check against"
+                    }
+                },
+                "required": ["content", "memory_type"]
+            }
+        ),
+        Tool(
+            name="project_recall",
+            description="Recall memories with boost for current project context. Memories tagged with the current project rank higher.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "What to search for"
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Current project name (e.g., 'continuous', 'made4founders')"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "description": "Maximum results (default: 5)"
+                    }
+                },
+                "required": ["query"]
+            }
+        ),
+        Tool(
+            name="tag_project",
+            description="Tag a memory with a project name for better project-scoped recall.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "memory_id": {
+                        "type": "string",
+                        "description": "ID of memory to tag"
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Project name to tag with"
+                    }
+                },
+                "required": ["memory_id", "project"]
+            }
+        ),
     ]
 
 
@@ -348,6 +409,68 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 lines.append(f"  {edge['from'][:8]}... -> {edge['to'][:8]}...")
 
         return [TextContent(type="text", text="\n".join(lines))]
+
+    elif name == "check_contradiction":
+        content = arguments["content"]
+        memory_type = MemoryType(arguments["memory_type"])
+
+        detector = ContradictionDetector(mind.store)
+        contradictions = detector.check_contradiction(content, memory_type)
+
+        if not contradictions:
+            return [TextContent(
+                type="text",
+                text="No contradictions detected. Safe to store."
+            )]
+
+        lines = [f"Found {len(contradictions)} potential contradiction(s):", ""]
+        for c in contradictions:
+            lines.append(f"Existing: {c['existing_content'][:80]}...")
+            lines.append(f"New: {c['new_content'][:80]}...")
+            lines.append(f"Similarity: {c['similarity']:.2f}")
+            lines.append(f"ID: {c['existing_id']}")
+            lines.append("")
+
+        lines.append("Options: Update existing memory, supersede it, or keep both.")
+
+        return [TextContent(type="text", text="\n".join(lines))]
+
+    elif name == "project_recall":
+        query = arguments["query"]
+        project = arguments.get("project")
+        limit = arguments.get("limit", 5)
+
+        scope = ProjectScope(mind.store)
+        results = scope.search_with_project_boost(query, project, k=limit)
+
+        if not results:
+            return [TextContent(type="text", text="No memories found.")]
+
+        lines = [f"Found {len(results)} memories" + (f" (boosted for project: {project})" if project else "") + ":\n"]
+        for m, score in results:
+            project_tags = [t for t in m.tags if t.startswith("project:")]
+            tag_str = f" [{', '.join(project_tags)}]" if project_tags else ""
+            lines.append(f"- [{m.memory_type.value}]{tag_str} {m.content}")
+            lines.append(f"  (score: {score:.2f}, id: {m.id})\n")
+
+        return [TextContent(type="text", text="\n".join(lines))]
+
+    elif name == "tag_project":
+        memory_id = arguments["memory_id"]
+        project = arguments["project"]
+
+        memory = mind.store.get(memory_id)
+        if not memory:
+            return [TextContent(type="text", text=f"Memory not found: {memory_id}")]
+
+        scope = ProjectScope(mind.store)
+        memory = scope.tag_memory_with_project(memory, project)
+        mind.store.update(memory)
+
+        return [TextContent(
+            type="text",
+            text=f"Tagged memory with project:{project}"
+        )]
 
     else:
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
