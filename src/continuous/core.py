@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from continuous.identity import Identity
-from continuous.memory import Memory, MemoryType, MemoryQuery
+from continuous.memory import Memory, MemoryType, MemoryQuery, SourceType
 
 
 def get_store(use_supabase: bool = True, data_dir: Optional[Path] = None):
@@ -66,6 +66,9 @@ class Continuous:
         importance: float = 0.5,
         tags: Optional[list[str]] = None,
         source: Optional[str] = None,
+        source_type: SourceType = SourceType.INFERRED,
+        confidence: float = 1.0,
+        project: Optional[str] = None,
     ) -> Memory:
         """
         Store a new memory.
@@ -75,17 +78,27 @@ class Continuous:
             memory_type: Type of memory (fact, preference, decision, etc.)
             importance: How important is this (0.0 to 1.0)
             tags: Optional tags for categorization
-            source: Where this memory came from
+            source: Where this memory came from (free-form)
+            source_type: How the memory was acquired (user_stated, inferred, etc.)
+            confidence: How certain we are (0.0 to 1.0)
+            project: Project this memory belongs to (auto-detected if not provided)
 
         Returns:
             The created Memory object
         """
+        # Auto-detect project from cwd if not provided
+        if project is None:
+            project = self._detect_project()
+
         memory = Memory(
             content=content,
             memory_type=memory_type,
             importance=importance,
             tags=tags or [],
             source=source or "direct",
+            source_type=source_type,
+            confidence=confidence,
+            project=project,
         )
 
         self.store.add(memory)
@@ -93,12 +106,28 @@ class Continuous:
 
         return memory
 
+    def _detect_project(self) -> Optional[str]:
+        """Auto-detect project name from current working directory."""
+        try:
+            cwd = Path.cwd()
+            # Look for common project indicators
+            if "projects" in cwd.parts:
+                idx = cwd.parts.index("projects")
+                if idx + 1 < len(cwd.parts):
+                    return cwd.parts[idx + 1]
+            # Fallback: use the last directory component
+            return cwd.name if cwd.name not in ["home", "tmp", "var"] else None
+        except Exception:
+            return None
+
     def recall(
         self,
         query: str,
         k: int = 10,
         memory_types: Optional[list[MemoryType]] = None,
         min_importance: float = 0.0,
+        project: Optional[str] = None,
+        expand_query: bool = False,
     ) -> list[Memory]:
         """
         Recall memories related to a query.
@@ -108,17 +137,89 @@ class Continuous:
             k: Maximum number of results
             memory_types: Filter by memory types
             min_importance: Minimum importance threshold
+            project: Filter by project
+            expand_query: Whether to expand short queries with synonyms
 
         Returns:
             List of relevant memories, sorted by relevance
         """
+        # Query expansion for short/vague queries
+        search_query = query
+        if expand_query and len(query.split()) <= 3:
+            search_query = self._expand_query(query)
+
         results = self.store.search(
-            query=query,
+            query=search_query,
             k=k,
             memory_types=memory_types,
             min_importance=min_importance,
+            project=project,
         )
         return [memory for memory, score in results]
+
+    def _expand_query(self, query: str) -> str:
+        """Expand short queries with related terms."""
+        expansions = {
+            "deal": "deal agreement handshake promise partnership commitment",
+            "joshua": "joshua gutierrez ceo axion",
+            "crystal": "crystal gutierrez founder chairperson wife",
+            "axion": "axion deep labs company research",
+            "made4founders": "made4founders founderos startup command center",
+            "preference": "preference likes prefers wants",
+            "project": "project work building developing",
+        }
+
+        query_lower = query.lower()
+        for key, expansion in expansions.items():
+            if key in query_lower:
+                return f"{query} {expansion}"
+
+        return query
+
+    def recall_within_budget(
+        self,
+        query: str,
+        token_budget: int = 2000,
+        memory_types: Optional[list[MemoryType]] = None,
+        min_importance: float = 0.0,
+    ) -> list[Memory]:
+        """
+        Recall memories that fit within a token budget.
+
+        Prioritizes by effective_score, packs memories until budget is reached.
+
+        Args:
+            query: Natural language query
+            token_budget: Maximum tokens to use
+            memory_types: Filter by memory types
+            min_importance: Minimum importance threshold
+
+        Returns:
+            List of memories that fit within the budget
+        """
+        # Get more results than needed, then filter by budget
+        results = self.store.search(
+            query=query,
+            k=50,
+            memory_types=memory_types,
+            min_importance=min_importance,
+        )
+
+        # Sort by effective score
+        scored = [(m, m.effective_score(s)) for m, s in results]
+        scored.sort(key=lambda x: -x[1])
+
+        # Pack within budget
+        selected = []
+        used_tokens = 0
+
+        for memory, score in scored:
+            tokens = memory.estimate_tokens()
+            if used_tokens + tokens <= token_budget:
+                selected.append(memory)
+                used_tokens += tokens
+
+        return selected
 
     def forget(self, memory_id: str) -> bool:
         """
@@ -296,11 +397,26 @@ class Continuous:
         memories = self.store.all()
 
         type_counts = {}
+        source_counts = {}
+        project_counts = {}
+        total_tokens = 0
+
         for m in memories:
             type_counts[m.memory_type.value] = type_counts.get(m.memory_type.value, 0) + 1
+            source_counts[m.source_type.value] = source_counts.get(m.source_type.value, 0) + 1
+            if m.project:
+                project_counts[m.project] = project_counts.get(m.project, 0) + 1
+            total_tokens += m.estimate_tokens()
+
+        # Find memories needing verification
+        needs_verify = [m for m in memories if m.needs_verification()]
 
         return {
             "total_memories": len(memories),
             "by_type": type_counts,
+            "by_source": source_counts,
+            "by_project": project_counts,
+            "total_tokens": total_tokens,
+            "needs_verification": len(needs_verify),
             "session_memories": len(self._session_memories),
         }

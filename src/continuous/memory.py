@@ -29,6 +29,16 @@ class MemoryType(str, Enum):
     PROMISE = "promise"        # A commitment made
 
 
+class SourceType(str, Enum):
+    """How the memory was acquired."""
+
+    USER_STATED = "user_stated"      # User explicitly said this
+    INFERRED = "inferred"            # Claude concluded this from context
+    FILE = "file"                    # Extracted from a document
+    CORRECTED = "corrected"          # User corrected a previous memory
+    AUTO_EXTRACTED = "auto_extracted"  # Extracted by post-conversation hook
+
+
 class Memory(BaseModel):
     """A single memory unit."""
 
@@ -39,9 +49,28 @@ class Memory(BaseModel):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
     # Optional metadata
-    source: Optional[str] = None  # Where this memory came from
+    source: Optional[str] = None  # Free-form source description
     importance: float = 0.5       # 0.0 to 1.0, how important is this
     tags: list[str] = Field(default_factory=list)
+
+    # Source tracking (v2)
+    source_type: SourceType = SourceType.INFERRED
+    confidence: float = 1.0       # 0.0 to 1.0, how certain
+    project: Optional[str] = None  # Project this memory belongs to
+
+    # Token management (v2)
+    token_count: Optional[int] = None
+
+    # Model tracking for migration (v2)
+    embedding_model: str = "all-MiniLM-L6-v2"
+
+    # Verification (v2)
+    last_verified_at: Optional[datetime] = None
+    verification_count: int = 0
+
+    # Version history (v2)
+    previous_version_id: Optional[str] = None
+    superseded_by_id: Optional[str] = None
 
     # Relationships
     related_to: list[str] = Field(default_factory=list)  # IDs of related memories
@@ -100,19 +129,59 @@ class Memory(BaseModel):
 
     def effective_score(self, similarity: float, as_of: datetime = None) -> float:
         """
-        Calculate effective relevance score combining similarity, importance, and recency.
+        Calculate effective relevance score combining similarity, importance, recency, and confidence.
 
         Args:
             similarity: Vector similarity score (0-1)
             as_of: Time to calculate decay from
 
         Returns:
-            Combined score weighted by importance and recency
+            Combined score weighted by importance, recency, and confidence
         """
         decay = self.temporal_decay(as_of)
 
-        # Weight: 50% similarity, 30% importance, 20% recency
-        return (0.5 * similarity) + (0.3 * self.importance) + (0.2 * decay)
+        # Weight: 40% similarity, 25% importance, 20% recency, 15% confidence
+        base_score = (0.4 * similarity) + (0.25 * self.importance) + (0.2 * decay) + (0.15 * self.confidence)
+
+        # Boost for user_stated sources (most reliable)
+        if self.source_type == SourceType.USER_STATED:
+            base_score *= 1.1
+
+        return min(1.0, base_score)
+
+    def estimate_tokens(self) -> int:
+        """
+        Estimate token count for context budget.
+
+        Rough estimate: ~4 chars per token for English text.
+        """
+        if self.token_count:
+            return self.token_count
+
+        # Rough estimation
+        base_tokens = len(self.content) // 4
+
+        # Add overhead for metadata in context
+        overhead = 10  # Type label, formatting
+
+        return base_tokens + overhead
+
+    def verify(self) -> None:
+        """Mark memory as verified (user confirmed it's still accurate)."""
+        self.last_verified_at = datetime.utcnow()
+        self.verification_count += 1
+        # Boost confidence slightly when verified
+        self.confidence = min(1.0, self.confidence + 0.1)
+
+    def needs_verification(self, days_threshold: int = 30) -> bool:
+        """Check if memory should be re-verified."""
+        if self.last_verified_at is None:
+            # Never verified, check age
+            age_days = (datetime.utcnow() - self.created_at).days
+            return age_days > days_threshold
+
+        days_since_verify = (datetime.utcnow() - self.last_verified_at).days
+        return days_since_verify > days_threshold
 
 
 class MemoryQuery(BaseModel):
