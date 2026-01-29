@@ -19,6 +19,7 @@ from mcp.types import (
 
 from continuous.core import Continuous
 from continuous.memory import MemoryType
+from continuous.consolidation import MemoryConsolidator
 
 # Initialize the server
 server = Server("continuous")
@@ -123,6 +124,73 @@ async def list_tools() -> list[Tool]:
                 "properties": {}
             }
         ),
+        Tool(
+            name="briefing",
+            description="Get a contextual briefing with high-importance memories, recent context, and relevant memories for a topic. Use at session start or when switching contexts.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "description": "Optional topic to focus the briefing on"
+                    }
+                }
+            }
+        ),
+        Tool(
+            name="link_memories",
+            description="Find and create links between related memories. Call this after storing important memories to build the knowledge graph.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "memory_id": {
+                        "type": "string",
+                        "description": "ID of memory to find links for"
+                    },
+                    "threshold": {
+                        "type": "number",
+                        "minimum": 0.5,
+                        "maximum": 1.0,
+                        "description": "Similarity threshold for linking (default: 0.75)"
+                    }
+                },
+                "required": ["memory_id"]
+            }
+        ),
+        Tool(
+            name="boost_memory",
+            description="Increase the importance of a memory that proved useful. Call this when a recalled memory was helpful.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "memory_id": {
+                        "type": "string",
+                        "description": "ID of memory to boost"
+                    }
+                },
+                "required": ["memory_id"]
+            }
+        ),
+        Tool(
+            name="memory_graph",
+            description="Get the relationship graph around a memory - what it's connected to.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "memory_id": {
+                        "type": "string",
+                        "description": "ID of memory to explore connections from"
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 3,
+                        "description": "How many levels of connections to traverse (default: 2)"
+                    }
+                },
+                "required": ["memory_id"]
+            }
+        ),
     ]
 
 
@@ -183,6 +251,103 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     elif name == "memory_stats":
         stats = mind.stats()
         return [TextContent(type="text", text=json.dumps(stats, indent=2))]
+
+    elif name == "briefing":
+        topic = arguments.get("topic")
+        lines = [
+            "# Memory Briefing",
+            "",
+            mind.identity.to_context(),
+            "",
+            "---",
+            "",
+        ]
+
+        # High-importance memories
+        all_memories = mind.store.all()
+        important = [m for m in all_memories if m.importance >= 0.8]
+        if important:
+            lines.extend(["## Core Memories", ""])
+            for m in sorted(important, key=lambda x: -x.importance)[:5]:
+                lines.append(f"- **[{m.memory_type.value}]** {m.content}")
+            lines.append("")
+
+        # Topic-relevant memories
+        if topic:
+            relevant = mind.recall(topic, k=5)
+            if relevant:
+                lines.extend([f"## Relevant to '{topic}'", ""])
+                for m in relevant:
+                    lines.append(f"- [{m.memory_type.value}] {m.content}")
+                lines.append("")
+
+        # Recent memories
+        recent = sorted(all_memories, key=lambda m: m.created_at, reverse=True)[:3]
+        if recent:
+            lines.extend(["## Recent", ""])
+            for m in recent:
+                lines.append(f"- {m.content[:100]}...")
+            lines.append("")
+
+        lines.append(f"*{len(all_memories)} total memories*")
+
+        return [TextContent(type="text", text="\n".join(lines))]
+
+    elif name == "link_memories":
+        memory_id = arguments["memory_id"]
+        threshold = arguments.get("threshold", 0.75)
+
+        consolidator = MemoryConsolidator(mind.store)
+        memory = mind.store.get(memory_id)
+
+        if not memory:
+            return [TextContent(type="text", text=f"Memory not found: {memory_id}")]
+
+        linked = consolidator.auto_link(memory, threshold=threshold)
+
+        if linked:
+            return [TextContent(
+                type="text",
+                text=f"Linked memory to {len(linked)} related memories: {', '.join(linked)}"
+            )]
+        else:
+            return [TextContent(type="text", text="No sufficiently similar memories found to link.")]
+
+    elif name == "boost_memory":
+        memory_id = arguments["memory_id"]
+
+        consolidator = MemoryConsolidator(mind.store)
+        memory = consolidator.importance_boost(memory_id)
+
+        if memory:
+            return [TextContent(
+                type="text",
+                text=f"Boosted importance to {memory.importance:.2f} for: {memory.content[:50]}..."
+            )]
+        else:
+            return [TextContent(type="text", text=f"Memory not found: {memory_id}")]
+
+    elif name == "memory_graph":
+        memory_id = arguments["memory_id"]
+        depth = arguments.get("depth", 2)
+
+        consolidator = MemoryConsolidator(mind.store)
+        graph = consolidator.get_memory_graph(memory_id, depth=depth)
+
+        if not graph['nodes']:
+            return [TextContent(type="text", text=f"Memory not found: {memory_id}")]
+
+        lines = [f"Memory Graph (depth={depth}):", ""]
+        lines.append("Nodes:")
+        for nid, info in graph['nodes'].items():
+            lines.append(f"  [{info['type']}] {info['content'][:60]}... (importance: {info['importance']})")
+
+        if graph['edges']:
+            lines.extend(["", "Connections:"])
+            for edge in graph['edges']:
+                lines.append(f"  {edge['from'][:8]}... -> {edge['to'][:8]}...")
+
+        return [TextContent(type="text", text="\n".join(lines))]
 
     else:
         return [TextContent(type="text", text=f"Unknown tool: {name}")]

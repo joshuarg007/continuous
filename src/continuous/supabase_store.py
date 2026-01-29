@@ -173,6 +173,26 @@ class SupabaseStore:
         response = self._client.table("memories").delete().eq("id", memory_id).execute()
         return len(response.data) > 0
 
+    def update(self, memory: Memory) -> bool:
+        """Update an existing memory."""
+        data = {
+            "content": memory.content,
+            "memory_type": memory.memory_type.value,
+            "importance": memory.importance,
+            "tags": memory.tags,
+            "source": memory.source,
+            "related_to": memory.related_to,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        # Re-embed if content changed (check by fetching current)
+        current = self.get(memory.id)
+        if current and current.content != memory.content:
+            data["embedding"] = self._embed(memory.content)
+
+        response = self._client.table("memories").update(data).eq("id", memory.id).execute()
+        return len(response.data) > 0
+
     def all(self) -> list[Memory]:
         """Get all memories."""
         response = self._client.table("memories").select("*").order("created_at", desc=True).execute()

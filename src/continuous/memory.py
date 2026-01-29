@@ -2,11 +2,17 @@
 Memory types and structures for Continuous.
 """
 
-from datetime import datetime
+import math
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field
 import uuid
+
+
+# Decay constants
+HALF_LIFE_DAYS = 30  # Memory relevance halves every 30 days
+MIN_DECAY_FACTOR = 0.1  # Never decay below 10% relevance
 
 
 class MemoryType(str, Enum):
@@ -65,6 +71,48 @@ class Memory(BaseModel):
             MemoryType.PROMISE: "Promise:",
         }
         return f"{prefix.get(self.memory_type, '')} {self.content}"
+
+    def temporal_decay(self, as_of: datetime = None) -> float:
+        """
+        Calculate temporal decay factor based on age.
+
+        Memories decay over time unless they're high importance.
+        Promises and high-importance memories (>=0.9) don't decay.
+
+        Returns:
+            Decay factor between MIN_DECAY_FACTOR and 1.0
+        """
+        # Promises and critical memories don't decay
+        if self.memory_type == MemoryType.PROMISE or self.importance >= 0.9:
+            return 1.0
+
+        as_of = as_of or datetime.utcnow()
+        age_days = (as_of - self.created_at).days
+
+        if age_days <= 0:
+            return 1.0
+
+        # Exponential decay with half-life
+        decay = math.pow(0.5, age_days / HALF_LIFE_DAYS)
+
+        # Never decay below minimum
+        return max(decay, MIN_DECAY_FACTOR)
+
+    def effective_score(self, similarity: float, as_of: datetime = None) -> float:
+        """
+        Calculate effective relevance score combining similarity, importance, and recency.
+
+        Args:
+            similarity: Vector similarity score (0-1)
+            as_of: Time to calculate decay from
+
+        Returns:
+            Combined score weighted by importance and recency
+        """
+        decay = self.temporal_decay(as_of)
+
+        # Weight: 50% similarity, 30% importance, 20% recency
+        return (0.5 * similarity) + (0.3 * self.importance) + (0.2 * decay)
 
 
 class MemoryQuery(BaseModel):
