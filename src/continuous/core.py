@@ -3,8 +3,13 @@ Continuous - The main interface for semantic memory.
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+
+
+def utcnow() -> datetime:
+    """Get current UTC time as timezone-aware datetime."""
+    return datetime.now(timezone.utc)
 from typing import Optional, Union
 
 from continuous.identity import Identity
@@ -326,7 +331,7 @@ class Continuous:
         Returns:
             Context string to inject at session start
         """
-        self._session_start = datetime.utcnow()
+        self._session_start = utcnow()
         self._session_memories = []
         return self.context()
 
@@ -342,7 +347,7 @@ class Continuous:
         """
         session_duration = None
         if self._session_start:
-            session_duration = (datetime.utcnow() - self._session_start).total_seconds()
+            session_duration = (utcnow() - self._session_start).total_seconds()
 
         summary = {
             "duration_seconds": session_duration,

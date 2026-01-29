@@ -10,7 +10,12 @@ These hooks run automatically:
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def utcnow() -> datetime:
+    """Get current UTC time as timezone-aware datetime."""
+    return datetime.now(timezone.utc)
 from pathlib import Path
 
 
@@ -95,7 +100,7 @@ def session_end_hook(conversation_summary: str = None):
 
         mind = get_mind()
         mind.remember_conversation(
-            f"Session ended {datetime.utcnow().isoformat()}: {conversation_summary}",
+            f"Session ended {utcnow().isoformat()}: {conversation_summary}",
             importance=0.5,
         )
         print(f"[Continuous] Session memory stored", file=sys.stderr)

@@ -7,7 +7,12 @@ This module handles:
 - Memory graph operations
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+
+def utcnow() -> datetime:
+    """Get current UTC time as timezone-aware datetime."""
+    return datetime.now(timezone.utc)
 from typing import Optional
 from collections import defaultdict
 
@@ -143,7 +148,7 @@ class MemoryConsolidator:
             List of consolidation actions (taken or proposed)
         """
         all_memories = self.store.all()
-        cutoff = datetime.utcnow() - timedelta(days=age_days)
+        cutoff = utcnow() - timedelta(days=age_days)
 
         # Only consider older memories
         candidates = [m for m in all_memories if m.created_at < cutoff]
@@ -217,7 +222,7 @@ class MemoryConsolidator:
         memory = self.store.get(memory_id)
         if memory:
             memory.importance = min(1.0, memory.importance + boost)
-            memory.updated_at = datetime.utcnow()
+            memory.updated_at = utcnow()
             self.store.update(memory)
         return memory
 
@@ -352,7 +357,7 @@ class ContradictionDetector:
             # Update existing memory with new content
             old_content = existing.content
             existing.content = new_content
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = utcnow()
             existing.tags.append(f"updated_from:{old_content[:50]}")
             self.store.update(existing)
             return {

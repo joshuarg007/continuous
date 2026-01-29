@@ -3,7 +3,12 @@ Supabase-backed vector store for semantic memory.
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def utcnow() -> datetime:
+    """Get current UTC time as timezone-aware datetime."""
+    return datetime.now(timezone.utc)
 from pathlib import Path
 from typing import Optional
 import numpy as np
@@ -242,7 +247,7 @@ class SupabaseStore:
             "tags": memory.tags,
             "source": memory.source,
             "related_to": memory.related_to,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": utcnow().isoformat(),
             # v2 fields
             "source_type": memory.source_type.value,
             "confidence": memory.confidence,

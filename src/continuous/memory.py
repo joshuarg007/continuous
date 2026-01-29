@@ -3,11 +3,16 @@ Memory types and structures for Continuous.
 """
 
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field
 import uuid
+
+
+def utcnow() -> datetime:
+    """Get current UTC time as timezone-aware datetime."""
+    return datetime.now(timezone.utc)
 
 
 # Decay constants
@@ -45,8 +50,8 @@ class Memory(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     content: str
     memory_type: MemoryType
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
 
     # Optional metadata
     source: Optional[str] = None  # Free-form source description
@@ -115,7 +120,7 @@ class Memory(BaseModel):
         if self.memory_type == MemoryType.PROMISE or self.importance >= 0.9:
             return 1.0
 
-        as_of = as_of or datetime.utcnow()
+        as_of = as_of or utcnow()
         age_days = (as_of - self.created_at).days
 
         if age_days <= 0:
@@ -168,7 +173,7 @@ class Memory(BaseModel):
 
     def verify(self) -> None:
         """Mark memory as verified (user confirmed it's still accurate)."""
-        self.last_verified_at = datetime.utcnow()
+        self.last_verified_at = utcnow()
         self.verification_count += 1
         # Boost confidence slightly when verified
         self.confidence = min(1.0, self.confidence + 0.1)
@@ -177,10 +182,10 @@ class Memory(BaseModel):
         """Check if memory should be re-verified."""
         if self.last_verified_at is None:
             # Never verified, check age
-            age_days = (datetime.utcnow() - self.created_at).days
+            age_days = (utcnow() - self.created_at).days
             return age_days > days_threshold
 
-        days_since_verify = (datetime.utcnow() - self.last_verified_at).days
+        days_since_verify = (utcnow() - self.last_verified_at).days
         return days_since_verify > days_threshold
 
 
